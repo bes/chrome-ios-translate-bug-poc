@@ -1,0 +1,486 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chrome for iOS translate re-injection bug</title>
+<style>
+  :root { color-scheme: light dark; --bg: #fff; --fg: #111; --muted: #666; --line: #ccc; --panel: #f3f4f6; --bad: #b00020; --good: #0a7a2f; --accent: #005ce8; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #111; --fg: #eee; --muted: #aaa; --line: #444; --panel: #1c1c1e; --bad: #ff6b6b; --good: #5fd38d; --accent: #6ea8ff; } }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { padding: 0 16px 32px; max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 1.4rem; line-height: 1.3; margin: 20px 0 8px; }
+  h2 { font-size: 1.15rem; margin: 24px 0 8px; }
+  p, li { max-width: 70ch; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em; background: var(--panel); padding: 1px 4px; border-radius: 4px; }
+  nav { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+  button { font: inherit; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--fg); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.on { outline: 3px solid var(--accent); }
+  label.opt { display: flex; align-items: flex-start; gap: 8px; padding: 8px 4px; max-width: 70ch; }
+  label.opt input { margin-top: 5px; flex: none; }
+  main { border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px; min-height: 240px; }
+  .ticker { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .items { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+  .items li { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 0.95rem; }
+  .items li small { color: var(--muted); display: block; }
+  input[type=email], input[type=text] { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); width: 100%; max-width: 360px; box-sizing: border-box; background: var(--bg); color: var(--fg); }
+  #diag { margin-top: 24px; border: 2px solid var(--accent); border-radius: 12px; padding: 12px 16px; background: var(--panel); }
+  #diag h2 { margin-top: 0; }
+  .grid { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; font-size: 0.92rem; word-break: break-word; }
+  .grid div:nth-child(odd) { color: var(--muted); white-space: nowrap; }
+  .bad { color: var(--bad); font-weight: 600; }
+  .good { color: var(--good); font-weight: 600; }
+  pre#log { font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px; max-height: 45vh; overflow: auto; margin: 8px 0; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .muted { color: var(--muted); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Chrome for iOS injects the Google Translate library twice into the same page, after which it throws "Maximum call stack size exceeded" on every DOM change</h1>
+</header>
+
+<h2>How to reproduce</h2>
+<ol>
+  <li>Use a device whose Chrome for iOS user-interface language is not English, or enable "Always translate English" in
+    Chrome settings under Languages. The Google app on iOS shows the same behavior.</li>
+  <li>Open this page. When Chrome offers to translate it, accept. The diagnostics panel will report "Translation detected".</li>
+  <li>Tap "Autopilot" below and wait for a minute or two. The page will navigate between its views every few seconds.
+    Alternatively tap the view buttons yourself, type into the sign-in field, or use Chrome's translate bar to
+    show the original text and translate again.</li>
+  <li>Watch the diagnostics panel. Once the translate library has been injected a second time, every DOM change produces
+    <code>RangeError: Maximum call stack size exceeded</code>. The error's filename is the URL of this page rather than a
+    script URL, which marks it as coming from a script that Chrome evaluated natively.</li>
+  <li>Tap "Copy log" and paste the text into the bug report.</li>
+</ol>
+
+<h2>Navigate like a single-page app</h2>
+<nav id="nav">
+  <button data-view="home">Home</button>
+  <button data-view="products">Products</button>
+  <button data-view="categories">Categories</button>
+  <button data-view="signin">Sign in</button>
+  <button data-view="checkout">Checkout</button>
+</nav>
+<nav>
+  <button id="autopilot" class="primary">Autopilot: off</button>
+  <button id="tickerToggle">Clock re-render: on</button>
+  <label class="opt"><input type="checkbox" id="doubleNav" checked><span>Follow each navigation with an immediate <code>replaceState</code>, as many single-page apps do</span></label>
+</nav>
+
+<main id="view" aria-live="polite"></main>
+
+<section id="diag" class="notranslate" translate="no">
+  <h2>Diagnostics</h2>
+  <div class="grid">
+    <div>Browser</div><div id="ua"></div>
+    <div>Languages</div><div id="langs"></div>
+    <div>Page URL</div><div id="url"></div>
+    <div>html lang / class</div><div id="htmlAttrs"></div>
+    <div>Translation</div><div id="translation" class="muted">not detected</div>
+    <div>Errors</div><div id="errorSummary">none</div>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <button id="copyLog" class="primary">Copy log</button>
+    <button id="clearLog">Clear log</button>
+    <span id="copyStatus" class="muted"></span>
+  </div>
+  <pre id="log"></pre>
+  <p class="muted" style="font-size:0.85rem">This panel is marked <code>translate="no"</code> so that the log stays readable when the rest of the page is translated. Newest entries are at the bottom.</p>
+</section>
+
+<script>
+(function () {
+  'use strict';
+
+  var startedAt = performance.now();
+  var $ = function (id) { return document.getElementById(id); };
+
+  // ---------------------------------------------------------------------------
+  // Log
+  // ---------------------------------------------------------------------------
+  var entries = [];
+  var MAX_ENTRIES = 500;
+  var counts = { errors: 0, rangeErrors: 0, injected: 0 };
+
+  function elapsed() {
+    var s = (performance.now() - startedAt) / 1000;
+    return (s.toFixed(1) + 's').padStart(8, ' ');
+  }
+
+  function addEntry(kind, text) {
+    var entry = { time: elapsed(), kind: kind, text: text, repeat: 1 };
+    entries.push(entry);
+    if (entries.length > MAX_ENTRIES) entries.shift();
+    renderLog();
+    return entry;
+  }
+
+  function formatEntry(e) {
+    var rep = e.repeat > 1 ? ' (x' + e.repeat + ')' : '';
+    return e.time + ' [' + e.kind + '] ' + e.text + rep;
+  }
+
+  function renderLog() {
+    var pre = $('log');
+    pre.textContent = entries.map(formatEntry).join('\n');
+    pre.scrollTop = pre.scrollHeight;
+    var summary = $('errorSummary');
+    if (counts.errors === 0) {
+      summary.textContent = 'none';
+      summary.className = 'good';
+    } else {
+      summary.textContent = counts.errors + ' uncaught, ' + counts.rangeErrors + ' "Maximum call stack size exceeded", ' +
+        counts.injected + ' with the page URL as filename';
+      summary.className = counts.rangeErrors > 0 ? 'bad' : '';
+    }
+  }
+
+  function headerText() {
+    return [
+      'chrome-ios-translate-bug-poc log',
+      'Captured: ' + new Date().toISOString(),
+      'User agent: ' + navigator.userAgent,
+      'navigator.language: ' + navigator.language + '  navigator.languages: ' + (navigator.languages || []).join(','),
+      'Location: ' + location.href,
+      'html lang="' + document.documentElement.getAttribute('lang') + '" class="' + document.documentElement.className + '"',
+      '<font> wrappers: ' + document.getElementsByTagName('font').length,
+      'Errors: ' + counts.errors + ' uncaught, ' + counts.rangeErrors + ' RangeError call stack, ' + counts.injected + ' with page URL as filename',
+      ''
+    ].join('\n');
+  }
+
+  $('copyLog').addEventListener('click', function () {
+    var text = headerText() + entries.map(formatEntry).join('\n') + '\n';
+    var done = function (ok) { $('copyStatus').textContent = ok ? 'Copied ' + entries.length + ' entries.' : 'Copy failed. Select the log text manually.'; };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
+    } else {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      document.body.removeChild(ta);
+      done(ok);
+    }
+  });
+
+  $('clearLog').addEventListener('click', function () {
+    entries = [];
+    counts = { errors: 0, rangeErrors: 0, injected: 0 };
+    lastError = null;
+    renderLog();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Error capture
+  // ---------------------------------------------------------------------------
+  var lastError = null;
+
+  function isScriptUrl(filename) {
+    return /\.(m?js|ts|wasm)(\?|#|$)/.test(filename || '');
+  }
+
+  function isPageUrl(filename) {
+    // Scripts evaluated natively by the browser (and inline scripts) report the document URL or no URL at all.
+    if (!filename) return true;
+    try {
+      var u = new URL(filename, location.href);
+      return u.origin === location.origin && !isScriptUrl(u.pathname);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function urlsInStack(stack) {
+    var seen = {};
+    var out = [];
+    var re = /(https?:\/\/[^\s():@]+)(?::\d+)?(?::\d+)?/g;
+    var m;
+    while ((m = re.exec(stack || '')) !== null) {
+      var u = m[1].replace(/:\d+$/, '').replace(/:\d+$/, '');
+      if (!seen[u]) { seen[u] = true; out.push(u); }
+    }
+    return out;
+  }
+
+  function firstFrames(stack, n) {
+    return (stack || '').split('\n').filter(function (l) { return l.trim() !== ''; }).slice(0, n).map(function (l) { return '      ' + l.trim(); }).join('\n');
+  }
+
+  window.onerror = function (message, source, lineno, colno, error) {
+    var msg = String(message);
+    var where = (source || '?') + ':' + lineno + ':' + colno;
+    var key = msg + '|' + where;
+    var isRange = /Maximum call stack size exceeded/i.test(msg);
+    var pageUrl = isPageUrl(source);
+
+    counts.errors += 1;
+    if (isRange) counts.rangeErrors += 1;
+    if (pageUrl) counts.injected += 1;
+
+    if (lastError && lastError.key === key && performance.now() - lastError.at < 3000) {
+      lastError.entry.repeat += 1;
+      lastError.at = performance.now();
+      renderLog();
+      return false;
+    }
+
+    var stack = error && typeof error.stack === 'string' ? error.stack : '';
+    var lines = [msg, '    at ' + where];
+    if (pageUrl) lines.push('    filename is the page URL or empty, not a script URL -> script evaluated natively by the browser (translate library) or inline');
+    var urls = urlsInStack(stack);
+    if (urls.length > 1) lines.push('    stack frames reference ' + urls.length + ' different document URLs: ' + urls.join('  |  '));
+    if (stack) lines.push('    stack (first 6 frames):\n' + firstFrames(stack, 6));
+    var entry = addEntry('error', lines.join('\n'));
+    lastError = { key: key, at: performance.now(), entry: entry };
+    return false;
+  };
+
+  window.addEventListener('unhandledrejection', function (ev) {
+    var r = ev.reason;
+    var msg = r && r.message ? r.message : String(r);
+    counts.errors += 1;
+    if (/Maximum call stack size exceeded/i.test(msg)) counts.rangeErrors += 1;
+    addEntry('error', 'unhandled rejection: ' + msg + (r && r.stack ? '\n' + firstFrames(r.stack, 4) : ''));
+  });
+
+  // ---------------------------------------------------------------------------
+  // Translation detection: Google Translate wraps text in nested <font> elements
+  // and sets lang / class="translated-ltr" on <html>.
+  // ---------------------------------------------------------------------------
+  var translated = null;
+  var recountTimer = 0;
+
+  function recount() {
+    recountTimer = 0;
+    var fonts = document.getElementsByTagName('font').length;
+    var cls = document.documentElement.className;
+    var lang = document.documentElement.getAttribute('lang');
+    var now = fonts > 0 || /translated-(ltr|rtl)/.test(cls);
+    $('htmlAttrs').textContent = 'lang="' + lang + '" class="' + cls + '"';
+    var t = $('translation');
+    if (now) {
+      t.textContent = 'detected: ' + fonts + ' <font> wrappers, html lang="' + lang + '"';
+      t.className = 'good';
+    } else {
+      t.textContent = 'not detected';
+      t.className = 'muted';
+    }
+    if (translated === null) {
+      translated = now;
+      if (now) addEntry('translate', 'Translation active at load: ' + fonts + ' <font> wrappers, html lang="' + lang + '"');
+    } else if (now !== translated) {
+      translated = now;
+      addEntry('translate', now
+        ? 'Translation detected: ' + fonts + ' <font> wrappers, html lang="' + lang + '" class="' + cls + '"'
+        : 'Translation reverted: no <font> wrappers, html lang="' + lang + '" class="' + cls + '"');
+    }
+  }
+
+  function scheduleRecount() {
+    if (!recountTimer) recountTimer = setTimeout(recount, 250);
+  }
+
+  new MutationObserver(scheduleRecount).observe(document.documentElement, {
+    childList: true, subtree: true, attributes: true, attributeFilter: ['lang', 'class']
+  });
+
+  // ---------------------------------------------------------------------------
+  // Fake single-page application: a small pet store
+  // ---------------------------------------------------------------------------
+  var PRODUCTS = ['Salmon crunch dog kibble', 'Tuna pate cat food', 'Rope tug toy', 'Catnip mouse', 'Hamster exercise wheel', 'Budgie seed mix', 'Aquarium water conditioner', 'Reflective dog leash', 'Ceramic water bowl', 'Cat scratching post', 'Rabbit hay rack', 'Puppy training pads'];
+  var CATEGORIES = ['Dogs', 'Cats', 'Small pets', 'Birds', 'Fish and aquariums', 'Reptiles', 'Grooming', 'Toys and treats'];
+
+  function pad(n) { return n < 10 ? '0' + n : String(n); }
+
+  var VIEWS = {
+    home: {
+      title: 'Home',
+      html: function () {
+        return '<h2>Welcome to Whisker and Bone</h2>' +
+          '<p>This view mimics the landing page of a small online pet store. It shows what is new since your last visit, ' +
+          'a few recommended products and your loyalty points. All of this text is in English on purpose, so that Chrome ' +
+          'detects the page language as English and offers to translate it into the language of the device.</p>' +
+          '<p>Three new products arrived this week: a slow feeder bowl for dogs that eat too fast, a heated bed for older ' +
+          'cats, and a mineral block for rabbits. Your grooming appointment for Saturday is confirmed. You have 240 loyalty ' +
+          'points, enough for a free bag of treats with your next order.</p>' +
+          '<p>Use the buttons above to move between views. Each move is a same-document navigation, which is what triggers ' +
+          'Chrome for iOS to run language detection again on the same document.</p>';
+      }
+    },
+    products: {
+      title: 'Products',
+      html: function () {
+        var items = '';
+        for (var i = 0; i < 24; i++) {
+          var name = PRODUCTS[i % PRODUCTS.length];
+          var cat = CATEGORIES[(i * 3 + 1) % CATEGORIES.length];
+          var price = (4 + (i * 7) % 40) + '.' + pad((i * 37) % 100);
+          items += '<li><strong>' + name + (i >= PRODUCTS.length ? ' (large)' : '') + '</strong><small>' + cat + ', ' + price + ' per item, ' + (3 + i % 9) + ' in stock</small></li>';
+        }
+        return '<h2>Products</h2>' +
+          '<p>Everything currently in stock, newest first. Tap a product to see details and reviews, or browse by category. ' +
+          'Products that are on back order are marked and can be pre-ordered.</p>' +
+          '<ul class="items">' + items + '</ul>';
+      }
+    },
+    categories: {
+      title: 'Categories',
+      html: function () {
+        var items = '';
+        for (var i = 0; i < CATEGORIES.length; i++) {
+          items += '<li><strong>' + CATEGORIES[i] + '</strong><small>' + (12 + i * 5) + ' products, updated ' + (i + 2) + ' days ago</small></li>';
+        }
+        return '<h2>Categories</h2>' +
+          '<p>Categories group products by animal and by purpose. Category pages are where many single-page applications ' +
+          'perform two same-document navigations within a few milliseconds: one for the route and one to append query ' +
+          'parameters that restore scroll position or search state. The checkbox above reproduces this pattern.</p>' +
+          '<ul class="items">' + items + '</ul>';
+      }
+    },
+    signin: {
+      title: 'Sign in',
+      html: function () {
+        return '<h2>Sign in</h2>' +
+          '<p>Enter the e-mail address you registered with. We will check whether the account exists and then ask for your ' +
+          'password or send you a one-time link. Typing into the field below causes DOM updates similar to a controlled ' +
+          'React input, which on a real site was enough to trigger the error several times per second.</p>' +
+          '<p><label>E-mail address<br><input type="email" id="email" autocomplete="email" placeholder="name@example.com"></label></p>' +
+          '<p id="emailEcho" class="muted">Nothing typed yet.</p>' +
+          '<p><button id="continue" class="primary">Continue</button></p>';
+      },
+      mounted: function () {
+        var input = $('email');
+        var echo = $('emailEcho');
+        input.addEventListener('input', function () {
+          echo.textContent = input.value ? 'You typed ' + input.value.length + ' characters. We will look up this address when you continue.' : 'Nothing typed yet.';
+        });
+        $('continue').addEventListener('click', function () { navigate('checkout'); });
+      }
+    },
+    checkout: {
+      title: 'Checkout',
+      html: function () {
+        return '<h2>Checkout</h2>' +
+          '<p>Monthly subscription box for a medium-sized dog: a bag of kibble, two toys and a selection of treats, ' +
+          'delivered on the first weekday of every month. The subscription renews automatically unless cancelled. Prices ' +
+          'include VAT. Payment is handled by our payment provider and no card details are stored on our servers.</p>' +
+          '<ul><li>Free delivery on every box</li><li>Swap toys and treats from your account page</li>' +
+          '<li>Cancel any time, no questions asked</li></ul>' +
+          '<p><button id="back" class="primary">Back to the products</button></p>';
+      },
+      mounted: function () {
+        $('back').addEventListener('click', function () { navigate('products'); });
+      }
+    }
+  };
+
+  var ORDER = ['home', 'products', 'categories', 'signin', 'checkout'];
+
+  function currentView() {
+    var v = new URLSearchParams(location.search).get('view');
+    return VIEWS[v] ? v : 'home';
+  }
+
+  var renderCount = 0;
+
+  function render(view) {
+    var def = VIEWS[view];
+    renderCount += 1;
+    $('view').innerHTML = def.html() + '<p class="ticker" id="ticker"></p>';
+    document.title = def.title + ' – translate re-injection PoC';
+    if (def.mounted) def.mounted();
+    var buttons = document.querySelectorAll('#nav button');
+    for (var i = 0; i < buttons.length; i++) buttons[i].classList.toggle('on', buttons[i].getAttribute('data-view') === view);
+    $('url').textContent = location.pathname + location.search;
+    tick();
+  }
+
+  function navigate(view) {
+    var url = new URL(location.href);
+    url.hash = '';
+    url.search = '';
+    url.searchParams.set('view', view);
+    history.pushState({ view: view }, '', url.toString());
+    addEntry('nav', 'pushState -> ' + url.pathname + url.search);
+    render(view);
+    if ($('doubleNav').checked) {
+      var url2 = new URL(url.toString());
+      url2.searchParams.set('scroll', 'restore');
+      history.replaceState({ view: view }, '', url2.toString());
+      addEntry('nav', 'replaceState -> ' + url2.pathname + url2.search + ' (immediately after, as many single-page apps do)');
+      $('url').textContent = location.pathname + location.search;
+    }
+  }
+
+  window.addEventListener('popstate', function () {
+    addEntry('nav', 'popstate -> ' + location.pathname + location.search);
+    render(currentView());
+  });
+
+  var navButtons = document.querySelectorAll('#nav button');
+  for (var i = 0; i < navButtons.length; i++) {
+    navButtons[i].addEventListener('click', function (ev) { navigate(ev.currentTarget.getAttribute('data-view')); });
+  }
+
+  // Autopilot: cycle through the views every few seconds.
+  var autopilotTimer = 0;
+  $('autopilot').addEventListener('click', function () {
+    if (autopilotTimer) {
+      clearInterval(autopilotTimer);
+      autopilotTimer = 0;
+      $('autopilot').textContent = 'Autopilot: off';
+      addEntry('info', 'Autopilot stopped');
+    } else {
+      autopilotTimer = setInterval(function () {
+        var next = ORDER[(ORDER.indexOf(currentView()) + 1) % ORDER.length];
+        navigate(next);
+      }, 4000);
+      $('autopilot').textContent = 'Autopilot: on (navigates every 4 s)';
+      addEntry('info', 'Autopilot started, navigating every 4 s');
+    }
+  });
+
+  // Clock: DOM text updated twice per second, like a React component re-rendering.
+  var tickerTimer = 0;
+  function tick() {
+    var el = $('ticker');
+    if (!el) return;
+    var d = new Date();
+    el.textContent = 'Rendered ' + renderCount + ' times. Local time ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()) + '.' + String(d.getMilliseconds()).padStart(3, '0');
+  }
+  function startTicker() {
+    if (tickerTimer) return;
+    tickerTimer = setInterval(function () { renderCount += 1; tick(); }, 500);
+    $('tickerToggle').textContent = 'Clock re-render: on';
+  }
+  function stopTicker() {
+    clearInterval(tickerTimer);
+    tickerTimer = 0;
+    $('tickerToggle').textContent = 'Clock re-render: off';
+  }
+  $('tickerToggle').addEventListener('click', function () {
+    if (tickerTimer) { stopTicker(); addEntry('info', 'Clock re-render stopped'); }
+    else { startTicker(); addEntry('info', 'Clock re-render started'); }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Boot
+  // ---------------------------------------------------------------------------
+  $('ua').textContent = navigator.userAgent;
+  $('langs').textContent = navigator.language + ' (' + (navigator.languages || []).join(', ') + ')';
+  addEntry('info', 'Page loaded: ' + location.href);
+  addEntry('info', 'User agent: ' + navigator.userAgent);
+  addEntry('info', 'navigator.language=' + navigator.language + ' languages=' + (navigator.languages || []).join(','));
+  render(currentView());
+  startTicker();
+  recount();
+})();
+</script>
+</body>
+</html>
