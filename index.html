@@ -55,6 +55,19 @@
     script URL, which marks it as coming from a script that Chrome evaluated natively.</li>
   <li>Tap "Copy log" and paste the text into the bug report.</li>
 </ol>
+<p>
+  If nothing happens, the first translation probably finished within Chrome's 8-second limit, so Chrome considers the
+  page translated and does not translate it again on navigation. The second injection needs a second translation of
+  the same document. Ways to get one:
+</p>
+<ul>
+  <li>Open Chrome's translate menu for this page, choose "Show original", then choose the target language again. Or
+    switch to a different target language. Every translate action injects the library again.</li>
+  <li>Make the first translation time out: open "Catalog (heavy)" below, then translate. The view has about a thousand
+    unique product descriptions, which usually takes longer than 8 seconds on a phone. Chrome reports that the page
+    could not be translated; then navigate or tap translate again.</li>
+  <li>Or cut the network for ten seconds right after tapping translate (airplane mode), then reconnect and navigate.</li>
+</ul>
 
 <h2>Navigate like a single-page app</h2>
 <nav id="nav">
@@ -63,6 +76,7 @@
   <button data-view="categories">Categories</button>
   <button data-view="signin">Sign in</button>
   <button data-view="checkout">Checkout</button>
+  <button data-view="catalog">Catalog (heavy)</button>
 </nav>
 <nav>
   <button id="autopilot" class="primary">Autopilot: off</button>
@@ -363,6 +377,30 @@
         $('continue').addEventListener('click', function () { navigate('checkout'); });
       }
     },
+    catalog: {
+      title: 'Catalog',
+      html: function () {
+        var adjectives = ['Chewy', 'Crunchy', 'Soft', 'Durable', 'Squeaky', 'Grain-free', 'Organic', 'Reflective', 'Washable', 'Foldable', 'Insulated', 'Scented'];
+        var animals = ['puppies', 'senior dogs', 'kittens', 'indoor cats', 'rabbits', 'guinea pigs', 'budgies', 'goldfish', 'bearded dragons', 'hamsters', 'ferrets', 'parrots'];
+        var goods = ['chew bone', 'feather wand', 'travel crate', 'water fountain', 'grooming brush', 'training clicker', 'cooling mat', 'hay feeder', 'heat lamp', 'litter tray', 'harness', 'dental treat'];
+        var benefits = ['keeps teeth clean between vet visits', 'survives a full week of daily play', 'folds flat for easy storage', 'is dishwasher safe and does not stain', 'reduces shedding around the house', 'helps nervous animals settle at night', 'ships in plain recyclable packaging', 'comes in three sizes and four colours', 'was tested by our own shop animals', 'pairs well with the matching bowl', 'works without batteries', 'is made from recycled fishing nets'];
+        var items = '';
+        for (var i = 0; i < 1000; i++) {
+          var a = adjectives[i % adjectives.length];
+          var g = goods[(i * 5 + 2) % goods.length];
+          var an = animals[(i * 7 + 3) % animals.length];
+          var b1 = benefits[(i * 3) % benefits.length];
+          var b2 = benefits[(i * 3 + 5) % benefits.length];
+          items += '<li><strong>' + a + ' ' + g + ' for ' + an + '</strong><small>Item ' + (i + 1) + ' of the autumn catalog. This ' + g.toLowerCase() + ' ' + b1 + ' and ' + b2 + '. Customers who bought it also looked at item ' + ((i * 37) % 1000 + 1) + '.</small></li>';
+        }
+        return '<h2>Catalog (heavy)</h2>' +
+          '<p>This view exists to make translation slow. It contains about a thousand unique product descriptions, roughly ' +
+          'thirty thousand words. On a phone, translating all of it usually takes longer than the 8 seconds Chrome for iOS ' +
+          'allows before it reports that the page could not be translated. Once that happens, any further translate ' +
+          'attempt or auto-translate after navigation injects the library a second time.</p>' +
+          '<ul class="items">' + items + '</ul>';
+      }
+    },
     checkout: {
       title: 'Checkout',
       html: function () {
@@ -380,7 +418,7 @@
     }
   };
 
-  var ORDER = ['home', 'products', 'categories', 'signin', 'checkout'];
+  var ORDER = ['home', 'products', 'categories', 'signin', 'checkout', 'catalog'];
 
   function currentView() {
     var v = new URLSearchParams(location.search).get('view');
